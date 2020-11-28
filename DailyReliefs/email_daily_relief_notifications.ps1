@@ -112,16 +112,7 @@ foreach($reliefTeacher in $reliefTeachers) {
 
     $mailmessage = New-Object System.Net.Mail.MailMessage
     $mailmessage.from = $mailSender
-
-    ##############################################################################################
-    # CHANGE THIS FOR PRODUCTION!!!
-    ##############################################################################################
-    # Use my email for testing. 
-    # Write-Output "RUNNING IN DEBUG MODE!!!"
-    # $mailmessage.To.add('selby_b@woodcroft.sa.edu.au')
     $mailmessage.To.add($reliefTeacher.email)
-    ##############################################################################################
-
     $mailmessage.Subject = 'Daily Reliefs - Diverse Learning Needs Notification' 
     $mailmessage.IsBodyHTML = $true
     $mailmessage.Body = $emailBodyBegin
