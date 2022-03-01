@@ -6,14 +6,24 @@
 # It checks if an image already exists. If so, it checks how old the image is. If the last 
 # modification date of the image is greater than a certain number of days, a new image is 
 # extracted from Synergy and saved over the old image. 
+#
+# MODIFICATIONS
+# 
+#   [2022.03.01 SELBY_B] Included ability to output a ZIP file containing all images 
+#       to be used by the Library to import images into OLIVER system via a scheduled 
+#       regular import. 
+#
+# ===============================================================================================================
+
 
 param (
     [string] $rootFolder                    = "$(Split-Path $MyInvocation.MyCommand.path)",
     [string] $logFilePath                   = "$rootFolder\Logs\"+$(Get-Date -format 'yyyy.MM.dd')+"_PhotoSync.log",
-    [string] $script:writeToLog             = 'Y',
-    [string] $script:synergyImagesFolder    = '<FOLDER_PATH>',
+    [string] $script:synergyImagesFolder    = 'C:\Synergy\Images',
     [string] $script:imageFileExtension     = "jpg",
-    [int] $script:imageLifetimeDays         = 30
+    [int]    $script:imageLifetimeDays      = 7,
+    [string] $createLibraryZip              = 'Y',
+    [string] $libraryZipFile                = '\\wcfiler.woodcroft.sa.edu.au\mslib$\OLIVER\SynergyImages.zip'
 )
 
 
@@ -23,11 +33,11 @@ param (
 
 function ExportPhotoFromSynergy {
     param (
-        [int] $ID,
-        [string] $outputFilePath
+        [int] $ID
     )
 
     BEGIN {
+        $imageFileName = "$ID.$script:imageFileExtension"
         Write-Output "Extracting profile photo from Synergy to path: $script:synergyImagesFolder\$imageFileName"
     }
 
@@ -35,7 +45,7 @@ function ExportPhotoFromSynergy {
 
         $sqlGetSynergyProfileImage = "
             exec dbo.spsExportSynergyProfileImage 
-                @UserId             = $Id, 
+                @UserId             = $ID, 
                 @ExportFolderPath   = '$script:synergyImagesFolder', 
                 @FileName           = '$imageFileName'"
 
@@ -70,8 +80,7 @@ function PhotoSync {
     BEGIN {
 
         Write-Output "Starting image sync for user with ID $ID."
-        $imageFileName = "$ID.$imageFileExtension"
-        $imageFilePath = "$script:synergyImagesFolder\$imageFileName"
+        $imageFilePath = "$script:synergyImagesFolder\$ID.$imageFileExtension"
     }
 
 
@@ -94,10 +103,11 @@ function PhotoSync {
         }
 
         if($doImageExport) {
-            ExportPhotoFromSynergy -ID $ID -imageFilePath "$imageFilePath"
+            ExportPhotoFromSynergy -ID $ID 
         }
 
     }
+
 
     END {
         
@@ -119,6 +129,15 @@ $staffAndStudentsList = Invoke-Sqlcmd -server SYNERGY -query 'exec woodcroft.usp
 foreach($id in $staffAndStudentsList.ID) {
     PhotoSync -id $id *>> $logFilePath
 }
+
+if ($createLibraryZip -EQ 'Y') {
+    Write-output "$(Get-Date -format 'yyyy.MM.dd HH:mm:ss'): Creating ZIP file on Library drive for Oliver import."
+    Compress-Archive `
+        -Path "$script:synergyImagesFolder/*" `
+        -DestinationPath "$libraryZipFile" `
+        -Update
+}
+
 
 Write-output "Finished at $(Get-Date -format 'yyyy.MM.dd HH:mm:ss')." *>> $logFilePath
 Write-output "==============================================================================" *>> $logFilePath
