@@ -2,19 +2,19 @@
 Param(
     [Parameter(Mandatory=$true)] 
     [string] $userCanvasId,
-    # Folder where images will be exported to from Synergy, and read from by the Canvas API. 
-    [string] $imageFolder           = "$(Split-Path $MyInvocation.MyCommand.path)\Images",
+    # Folder where images are stored. This script expects images for users to be saved in this folder as 
+    # JPEGs with the user's synergy ID as the file name (e.g. '12345.jpg'). 
+    [string] $imageFolder           = "C:\Synergy\Images",
     # Do not include a period before the file extension.
     [string] $imageFileExtension    = "jpg",
     # Image file MIME type.
     [string] $imageFileContentType  = 'image/jpeg',
-    # Check if the image has been uploaded previously before proceeding?
+    # Check if the image has been uploaded previously before proceeding? If 'N', upload new image regardless. 
     [string] $doCheckSyncHistory    = 'Y',
-    # Get profile picture from a Synergy export (set to 'N' if image has already been saved to folder)
-    [string] $doExportProfilePic    = 'Y',
     # Update image sync database with info for the file we will upload. 
     [string] $doUpdateSyncHistory   = 'Y',
-    [string] $token                 = '<TOKEN>'
+    # Canvas API token for <USER>
+    [string] $token                 = '<CANVAS_API_TOKEN>'
 )
 
 
@@ -29,15 +29,15 @@ $headers    = @{Authorization="Bearer $token"}
 
 Function AssignAvatarImage {
 
-    param(
+    param (
         [Parameter(Mandatory=$true)] $userCanvasId,
         [Parameter(Mandatory=$true)] $fileUuid
     )
 
-    # Get a list of the available avatar images. 
-    # Note that if the user does not currently have a PROFILE PICTURES folder, this will create it. 
+    # Get a list of the avatar images currently available in Canvas. 
+    # If the user does not currently have a PROFILE PICTURES folder, this will create it. 
     try {
-        $avatarRequestUrl = "https://<HOSTNAME>:443/api/v1/users/$userCanvasId/avatars?as_user_id=$userCanvasId"
+        $avatarRequestUrl = "https://<CANVAS_API_URL>:443/api/v1/users/$userCanvasId/avatars?as_user_id=$userCanvasId"
         $availableAvatars = Invoke-RestMethod `
             -URI $avatarRequestUrl `
             -headers $headers `
@@ -59,7 +59,8 @@ Function AssignAvatarImage {
             try {
 
                 Write-Verbose "Assigning image file with IMAGE_TOKEN: $($image.token) as user avatar."
-                $setAvatarUri = "https://<HOSTNAME>:443/api/v1/users/$($userCanvasId)?user[avatar][token]=$($image.token)"
+                # I can't get this to work with the parameters in a form submission, but it seems to work fine in the url so whatever. 
+                $setAvatarUri = "https://<CANVAS_API_URL>:443/api/v1/users/$($userCanvasId)?user[avatar][token]=$($image.token)"
                 $setAvatarResponse = Invoke-RestMethod `
                     -Uri $setAvatarUri `
                     -Method Put `
@@ -83,7 +84,7 @@ Function AssignAvatarImage {
         Write-Verbose "There was a problem assigning an avatar from the available list of images."
         Write-Verbose (($availableAvatars | foreach-object {$_.url}) -join "`n")
         Return $false
-    } elseif ($setAvatarResponse.avatar_url -MATCH "^https://<HOSTNAME>.images/thumbnails/\d+/$fileUuid$") {
+    } elseif ($setAvatarResponse.avatar_url -MATCH "^https://<CANVAS_API_URL>.images/thumbnails/\d+/$fileUuid$") {
         Write-Verbose "OK, avatar assigned successfully."
         Return $true
     } else {
@@ -91,7 +92,6 @@ Function AssignAvatarImage {
         Return $false
     }
 }
-
 
 
 
@@ -104,7 +104,7 @@ Write-Output "Trying to get Synergy ID for Canvas user: $userCanvasId"
 
 try {
 
-    $getUserInfoUri = "https://<HOSTNAME>:443/api/v1/users/$userCanvasId"
+    $getUserInfoUri = "https://<CANVAS_API_URL>:443/api/v1/users/$userCanvasId"
     $userObject = Invoke-RestMethod `
         -Uri  $getUserInfoUri `
         -Method GET `
@@ -151,12 +151,12 @@ Write-Output "Checking sync history."
 
 # If AVATAR_URL is of the form: 'https://<DOMAIN>/images/thumbnails/<FILE_ID>/<FILE_UUID>', then it 
 # points to an uploaded image. 
-# If the avatar is empty, AVATAR_URL will contain the default URL: 'https://<HOSTNAME>/images/messages/avatar-50.png'
+# If the avatar is empty, AVATAR_URL will contain the default URL: 'https://<CANVAS_API_URL>/images/messages/avatar-50.png'
 
-if ($currentAvatarUrl -MATCH 'https://<HOSTNAME>.images/thumbnails/.+/.+') {
-    $currentAvatarFileId, $currentAvatarUuid = $currentAvatarUrl.Replace('https://<HOSTNAME>/images/thumbnails/', '').split('/')
+if ($currentAvatarUrl -MATCH 'https://<CANVAS_API_URL>.images/thumbnails/.+/.+') {
+    $currentAvatarFileId, $currentAvatarUuid = $currentAvatarUrl.Replace('https://<CANVAS_API_URL>/images/thumbnails/', '').split('/')
     Write-Output "Current Canvas avatar FILE_ID: $currentAvatarFileId UUID: $currentAvatarUuid"
-} elseif ($currentAvatarUrl -MATCH 'https://<HOSTNAME>/images/messages/avatar-50.png') {
+} elseif ($currentAvatarUrl -MATCH 'https://<CANVAS_API_URL>/images/messages/avatar-50.png') {
     Write-Output "Default avatar in place for this user - URI: $currentAvatarUrl"
     $currentAvatarFileId, $currentAvatarUuid = $nothing, $nothing
 } else {
@@ -203,40 +203,10 @@ Write-Output "Proceeding with image sync."
 #########################################################################################################
 
 
-if ($doExportProfilePic) {
-
-    Write-Output "Extracting user's profile photo from Synergy to path: $imageFilePath"
-
-    $sqlGetSynergyProfileImage = "
-        exec dbo.spsExportSynergyProfileImage 
-            @UserId             = $userSynergyId, 
-            @ExportFolderPath   = '$imageFolder', 
-            @FileName           = '$imageFileName'"
-
-    $imageExportProcess = Invoke-Sqlcmd `
-        -server TESTSERVER2 `
-        -database CanvasAdmin `
-        -query $sqlGetSynergyProfileImage
-
-    if ($imageExportProcess.ReturnValue -EQ 0) {
-        Write-Output "No image file was exported from Synergy for this user. Exiting."
-        Return
-    } elseif ($imageExportProcess.ReturnValue -EQ 1) {
-        Write-Output "Image file exported from Synergy successfully to [$imageFolder\$imageFileName]."
-    } else {
-        Write-Output "ERROR: Unknown return value from image export SQL procedure. Exiting process."
-        Return
-    }
-}
-
-
-#########################################################################################################
-
-
 Write-Output "Getting JSON data for the user's PROFILE PICTURES folder in Canvas." 
 
 try {
-    $folderInfoUri = "https://<HOSTNAME>:443/api/v1/users/$userCanvasId/folders?as_user_id=$userCanvasId"
+    $folderInfoUri = "https://<CANVAS_API_URL>:443/api/v1/users/$userCanvasId/folders?as_user_id=$userCanvasId"
     $canvasFoldersInfo = Invoke-RestMethod `
         -uri $folderInfoUri `
         -method GET `
@@ -259,14 +229,14 @@ if ($profilePicturesFolder -EQ $Nothing) {
     try {
         # The following request should create the PROFILE PICTURES folder if it doesn't already exist. 
         Invoke-RestMethod `
-            -URI "https://<HOSTNAME>:443/api/v1/users/$userCanvasId/avatars?as_user_id=$userCanvasId" `
+            -URI "https://<CANVAS_API_URL>:443/api/v1/users/$userCanvasId/avatars?as_user_id=$userCanvasId" `
             -headers $headers `
             -method GET `
             | Out-Null
 
         # Try to get PROFILE PICTURES folder again... 
         $canvasFoldersInfo = Invoke-RestMethod `
-            -uri "https://<HOSTNAME>:443/api/v1/users/$userCanvasId/folders?as_user_id=$userCanvasId" `
+            -uri "https://<CANVAS_API_URL>:443/api/v1/users/$userCanvasId/folders?as_user_id=$userCanvasId" `
             -method GET `
             -headers $headers `
             -FollowRelLink
@@ -300,7 +270,7 @@ $fileSize = (Get-Item $imageFilePath).Length
 try {
     # Checking user's file quota before upload. If there is not enough room we cannot upload the image file. 
     $quotaResponse = Invoke-RestMethod `
-        -uri "https://<HOSTNAME>:443/api/v1/users/$userCanvasId/files/quota?as_user_id=$userCanvasId" `
+        -uri "https://<CANVAS_API_URL>:443/api/v1/users/$userCanvasId/files/quota?as_user_id=$userCanvasId" `
         -Method GET `
         -headers $headers `
         -FollowRelLink
@@ -331,7 +301,7 @@ try {
         content_type = $imageFileContentType}     
 
     $fileUploadNotify = Invoke-RestMethod `
-        -URI "https://<HOSTNAME>:443/api/v1/folders/$($profilePicturesFolder.id)/files?as_user_id=$userCanvasId" `
+        -URI "https://<CANVAS_API_URL>:443/api/v1/folders/$($profilePicturesFolder.id)/files?as_user_id=$userCanvasId" `
         -headers $headers `
         -method POST `
         -form $form `
@@ -359,11 +329,11 @@ Write-Output "Uploading file data."
 # part of a FORM submission.
 
 try {
-    # Note - I originally programmed this to upload image file data using Invoke-RestMethod, but I have found it to be unreliable. 
-    # It sometimes results in the MIME type of images being not recognised correctly by Canvas, which means that 
-    # the uploaded image is not available to assign as a user avatar.
-    # I can't figure out why this happens (it may have something to do with the way that Invoke-RestMethod combines 
-    # FORM elements into an HTTP request payload). 
+    # Note - I originally programmed this to upload image file data using Invoke-RestMethod, but
+    # I have found it to be unreliable. It sometimes results in the MIME type of images being 
+    # not recognised correctly by Canvas, which means that the uploaded image is not available 
+    # to assign as a user avatar. I can't figure out why this happens (it may have something 
+    # to do with the way that Invoke-RestMethod combines FORM elements into an HTTP request payload). 
     # I am using CURL for the time being instead because it seems more reliable.
 
     $curlResponse = curl -X POST "$uploadUri" -F "file=@$imageFilePath"
